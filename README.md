@@ -105,7 +105,7 @@ John,Doe,john@example.com
 No installation required! Just clone the repository and run:
 
 ```bash
-git clone https://github.com/yourusername/csv-email-filter.git
+git clone https://github.com/olmstedian/csv-email-filter.git
 cd csv-email-filter
 python main.py
 ```
