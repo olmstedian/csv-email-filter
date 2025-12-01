@@ -1,0 +1,14 @@
+# CSV Email Filter - Requirements
+# 
+# This project uses only Python standard library modules.
+# No external dependencies are required.
+#
+# Required Python version: 3.6 or higher
+#
+# Optional (for GUI mode):
+# - tkinter (usually included with Python)
+#   Linux users may need to install separately:
+#   - Ubuntu/Debian: sudo apt-get install python3-tk
+#   - Fedora: sudo dnf install python3-tkinter
+#   - Arch: sudo pacman -S tk
+
