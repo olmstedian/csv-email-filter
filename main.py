@@ -4,13 +4,15 @@ CSV Email Filter
 
 A Python application that extracts email addresses from CSV files, automatically
 associates them with names (First Name, Last Name), and filters out suspicious emails.
+Also supports converting VCF (vCard) files to CSV format.
 
 Features:
 - Extracts emails from all CSV cells
 - Automatically detects and extracts First Name and Last Name columns
 - Filters suspicious emails using multiple heuristics
+- Converts VCF (vCard) files to CSV format
 - Supports GUI and command-line interfaces
-- Batch processing of multiple CSV files
+- Batch processing of multiple CSV and VCF files
 - No external dependencies required
 
 Author: CSV Email Filter Contributors
@@ -38,6 +40,115 @@ class EmailRecord:
     first_name: str
     last_name: str
     email: str
+
+
+def parse_vcf_file(vcf_file: str) -> List[EmailRecord]:
+    """
+    Parse a VCF (vCard) file and extract contact information.
+    
+    Args:
+        vcf_file: Path to the VCF file
+        
+    Returns:
+        List of EmailRecord objects extracted from the VCF file
+    """
+    email_records: Dict[str, EmailRecord] = {}
+    
+    try:
+        with open(vcf_file, 'r', encoding='utf-8', errors='ignore') as file:
+            content = file.read()
+            
+        # Split VCF file into individual vCard entries
+        # VCF files use "BEGIN:VCARD" and "END:VCARD" to delimit entries
+        vcard_pattern = r'BEGIN:VCARD(.*?)END:VCARD'
+        vcards = re.findall(vcard_pattern, content, re.DOTALL | re.IGNORECASE)
+        
+        if not vcards:
+            # Try to parse as single vCard or different format
+            vcards = [content]
+        
+        for vcard in vcards:
+            # Handle VCF line folding (lines starting with space or tab are continuations)
+            # First, unfold lines
+            lines = vcard.split('\n')
+            unfolded_lines = []
+            for line in lines:
+                if line and (line[0] in [' ', '\t']):
+                    # This is a continuation line
+                    if unfolded_lines:
+                        unfolded_lines[-1] += line[1:]  # Remove leading space/tab
+                else:
+                    unfolded_lines.append(line)
+            vcard_unfolded = '\n'.join(unfolded_lines)
+            
+            # Extract FN (Full Name) or N (Name) field
+            full_name = ""
+            first_name = ""
+            last_name = ""
+            
+            # Try to get FN (Full Name) - handle various formats
+            fn_match = re.search(r'^FN(?:;.*?)?:(.*?)(?:\r?\n|$)', vcard_unfolded, re.IGNORECASE | re.MULTILINE)
+            if fn_match:
+                full_name = fn_match.group(1).strip()
+            
+            # Try to get N (Name) field - format: N:Last;First;Middle;Prefix;Suffix
+            n_match = re.search(r'^N(?:;.*?)?:(.*?)(?:\r?\n|$)', vcard_unfolded, re.IGNORECASE | re.MULTILINE)
+            if n_match:
+                n_parts = [part.strip() for part in n_match.group(1).split(';')]
+                if len(n_parts) >= 2:
+                    last_name = n_parts[0] if n_parts[0] else ""
+                    first_name = n_parts[1] if n_parts[1] else ""
+                elif len(n_parts) == 1 and n_parts[0]:
+                    last_name = n_parts[0]
+            
+            # If we have full_name but not first/last, try to split it
+            if full_name and not first_name and not last_name:
+                name_parts = full_name.split(None, 1)
+                if len(name_parts) >= 2:
+                    first_name = name_parts[0]
+                    last_name = name_parts[1]
+                elif len(name_parts) == 1:
+                    first_name = name_parts[0]
+            
+            # Extract all EMAIL fields (can have multiple)
+            # Handle formats like: EMAIL:user@example.com, EMAIL;TYPE=INTERNET:user@example.com, etc.
+            email_pattern = r'^EMAIL(?:;.*?)?:(.*?)(?:\r?\n|$)'
+            emails = re.findall(email_pattern, vcard_unfolded, re.IGNORECASE | re.MULTILINE)
+            
+            # Clean up emails
+            cleaned_emails = []
+            for email in emails:
+                email = email.strip()
+                # Remove any trailing semicolons, colons, or whitespace
+                email = email.rstrip(';: \t')
+                if email and '@' in email:
+                    # Validate it looks like an email
+                    if re.match(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$', email):
+                        cleaned_emails.append(email)
+            
+            # If no emails found, skip this contact
+            if not cleaned_emails:
+                continue
+            
+            # Create records for each email
+            for email in cleaned_emails:
+                if email not in email_records:
+                    email_records[email] = EmailRecord(first_name, last_name, email)
+                else:
+                    # Update names if they're empty
+                    existing = email_records[email]
+                    if not existing.first_name and first_name:
+                        existing.first_name = first_name
+                    if not existing.last_name and last_name:
+                        existing.last_name = last_name
+    
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File '{vcf_file}' not found.")
+    except Exception as e:
+        raise Exception(f"Error reading VCF file: {e}")
+    
+    # Sort by email address
+    return sorted(list(email_records.values()), key=lambda x: x.email)
 
 
 def extract_emails_from_text(text: str) -> Set[str]:
@@ -314,6 +425,72 @@ def write_emails_to_csv(records: List[EmailRecord], output_file: str):
         return False
 
 
+def process_vcf_file(input_file: str, output_file: Optional[str] = None, 
+                     output_folder: Optional[str] = None, filter_suspicious: bool = True) -> bool:
+    """
+    Process a single VCF file and convert it to CSV format.
+    
+    Args:
+        input_file: Path to the input VCF file
+        output_file: Optional path to the output CSV file
+        output_folder: Optional folder for output files
+        filter_suspicious: Whether to filter out suspicious emails
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if not os.path.exists(input_file):
+        print(f"Error: File '{input_file}' not found.")
+        return False
+    
+    try:
+        print(f"Reading VCF file: {input_file}")
+        emails = parse_vcf_file(input_file)
+        
+        if not emails:
+            print(f"No email addresses found in '{input_file}'.")
+            return False
+        
+        # Filter suspicious emails if enabled
+        if filter_suspicious:
+            valid_emails, suspicious_emails = filter_suspicious_emails(emails)
+            print(f"Found {len(emails)} total email(s): {len(valid_emails)} valid, {len(suspicious_emails)} suspicious")
+        else:
+            valid_emails = emails
+            suspicious_emails = []
+            print(f"Found {len(emails)} unique email address(es)")
+        
+        # Determine output directory
+        if output_folder:
+            output_dir = Path(output_folder)
+            output_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            output_dir = Path(input_file).parent
+        
+        # Determine output file paths
+        input_path = Path(input_file)
+        if output_file is None:
+            valid_output = output_dir / f"{input_path.stem}_emails.csv"
+            suspicious_output = output_dir / f"{input_path.stem}_suspicious.csv"
+        else:
+            output_path = Path(output_file)
+            valid_output = output_dir / output_path.name
+            suspicious_output = output_dir / f"{output_path.stem}_suspicious.csv"
+        
+        # Write valid emails
+        success = write_emails_to_csv(valid_emails, str(valid_output))
+        
+        # Write suspicious emails if any were found
+        if suspicious_emails:
+            write_emails_to_csv(suspicious_emails, str(suspicious_output))
+            print(f"Suspicious emails saved to: {suspicious_output}")
+        
+        return success
+    except Exception as e:
+        print(f"Error processing '{input_file}': {e}")
+        return False
+
+
 def process_csv_file(input_file: str, output_file: Optional[str] = None, 
                      output_folder: Optional[str] = None, filter_suspicious: bool = True) -> bool:
     """
@@ -382,10 +559,10 @@ def process_csv_file(input_file: str, output_file: Optional[str] = None,
 
 def process_folder(folder_path: str, output_folder: Optional[str] = None, filter_suspicious: bool = True):
     """
-    Process all CSV files in a folder.
+    Process all CSV and VCF files in a folder.
     
     Args:
-        folder_path: Path to the folder containing CSV files
+        folder_path: Path to the folder containing CSV and VCF files
         output_folder: Optional folder for output files (defaults to 'output_csv' folder)
         filter_suspicious: Whether to filter out suspicious emails
     """
@@ -395,9 +572,10 @@ def process_folder(folder_path: str, output_folder: Optional[str] = None, filter
         return
     
     csv_files = list(folder.glob("*.csv"))
+    vcf_files = list(folder.glob("*.vcf"))
     
-    if not csv_files:
-        print(f"No CSV files found in '{folder_path}'.")
+    if not csv_files and not vcf_files:
+        print(f"No CSV or VCF files found in '{folder_path}'.")
         return
     
     # Use default output folder if not specified
@@ -408,7 +586,8 @@ def process_folder(folder_path: str, output_folder: Optional[str] = None, filter
     
     output_path.mkdir(parents=True, exist_ok=True)
     
-    print(f"Found {len(csv_files)} CSV file(s) in '{folder_path}'")
+    total_files = len(csv_files) + len(vcf_files)
+    print(f"Found {len(csv_files)} CSV file(s) and {len(vcf_files)} VCF file(s) in '{folder_path}'")
     print(f"Output folder: {output_path}")
     print("-" * 50)
     
@@ -418,12 +597,17 @@ def process_folder(folder_path: str, output_folder: Optional[str] = None, filter
             processed += 1
         print("-" * 50)
     
-    print(f"Processed {processed} out of {len(csv_files)} file(s) successfully.")
+    for vcf_file in vcf_files:
+        if process_vcf_file(str(vcf_file), output_folder=str(output_path), filter_suspicious=filter_suspicious):
+            processed += 1
+        print("-" * 50)
+    
+    print(f"Processed {processed} out of {total_files} file(s) successfully.")
 
 
 def select_file_gui() -> Optional[str]:
     """
-    Open a file dialog to select a CSV file.
+    Open a file dialog to select a CSV or VCF file.
     
     Returns:
         Selected file path or None if cancelled
@@ -436,8 +620,12 @@ def select_file_gui() -> Optional[str]:
     root.withdraw()  # Hide the main window
     
     file_path = filedialog.askopenfilename(
-        title="Select CSV File",
-        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        title="Select CSV or VCF File",
+        filetypes=[
+            ("CSV files", "*.csv"),
+            ("VCF files", "*.vcf"),
+            ("All files", "*.*")
+        ]
     )
     
     root.destroy()
@@ -480,7 +668,15 @@ def interactive_mode():
         file_path = select_file_gui()
         if file_path:
             output_folder = "output_csv"
-            if process_csv_file(file_path, output_folder=output_folder):
+            file_ext = Path(file_path).suffix.lower()
+            success = False
+            
+            if file_ext == '.vcf':
+                success = process_vcf_file(file_path, output_folder=output_folder)
+            else:
+                success = process_csv_file(file_path, output_folder=output_folder)
+            
+            if success:
                 messagebox.showinfo("Success", f"Emails extracted successfully!\nOutput folder: {output_folder}")
             else:
                 messagebox.showerror("Error", "Failed to process file.")
@@ -500,7 +696,7 @@ def interactive_mode():
     
     tk.Button(
         frame,
-        text="Select CSV File",
+        text="Select CSV/VCF File",
         command=process_single_file,
         width=25,
         height=2
@@ -546,8 +742,12 @@ def main():
             interactive_mode()
             return
         
-        # Otherwise treat as input file
-        process_csv_file(arg)
+        # Otherwise treat as input file - check extension
+        file_ext = Path(arg).suffix.lower()
+        if file_ext == '.vcf':
+            process_vcf_file(arg)
+        else:
+            process_csv_file(arg)
         return
     
     if len(sys.argv) == 3:
@@ -564,11 +764,19 @@ def main():
         # Check if second arg is output folder
         if os.path.isdir(arg2):
             # Process single file, output to folder
-            process_csv_file(arg1, output_folder=arg2)
+            file_ext = Path(arg1).suffix.lower()
+            if file_ext == '.vcf':
+                process_vcf_file(arg1, output_folder=arg2)
+            else:
+                process_csv_file(arg1, output_folder=arg2)
             return
         
         # Both are files (input and output)
-        process_csv_file(arg1, output_file=arg2)
+        file_ext = Path(arg1).suffix.lower()
+        if file_ext == '.vcf':
+            process_vcf_file(arg1, output_file=arg2)
+        else:
+            process_csv_file(arg1, output_file=arg2)
         return
     
     if len(sys.argv) == 4:
@@ -580,24 +788,33 @@ def main():
         
         # Input file, output file, and output folder
         if os.path.isdir(sys.argv[3]):
-            process_csv_file(sys.argv[1], output_file=sys.argv[2], output_folder=sys.argv[3])
+            file_ext = Path(sys.argv[1]).suffix.lower()
+            if file_ext == '.vcf':
+                process_vcf_file(sys.argv[1], output_file=sys.argv[2], output_folder=sys.argv[3])
+            else:
+                process_csv_file(sys.argv[1], output_file=sys.argv[2], output_folder=sys.argv[3])
             return
     
     # Show usage
     print("Usage:")
     print("  python main.py                          # Interactive GUI mode")
-    print("  python main.py <input.csv>              # Process single file (output to output_csv/)")
+    print("  python main.py <input.csv>              # Process single CSV file (output to output_csv/)")
+    print("  python main.py <input.vcf>              # Process single VCF file (output to output_csv/)")
     print("  python main.py <input.csv> <output.csv> # Process with custom output file")
+    print("  python main.py <input.vcf> <output.csv> # Convert VCF to CSV with custom output file")
     print("  python main.py <input.csv> <output_folder> # Process file, output to folder")
-    print("  python main.py --folder <folder>         # Process all CSV files in folder (output to output_csv/)")
+    print("  python main.py --folder <folder>         # Process all CSV and VCF files in folder (output to output_csv/)")
     print("  python main.py --folder <folder> <output_folder>  # Process folder with custom output")
     print("\nExamples:")
     print("  python main.py data.csv")
+    print("  python main.py contacts.vcf")
     print("  python main.py data.csv emails.csv")
+    print("  python main.py contacts.vcf contacts.csv")
     print("  python main.py data.csv output_csv")
     print("  python main.py --folder input_csv")
     print("  python main.py --folder input_csv output_csv")
     print("\nNote: Suspicious emails are automatically filtered and saved separately.")
+    print("      Supports both CSV and VCF (vCard) file formats.")
 
 
 if __name__ == "__main__":

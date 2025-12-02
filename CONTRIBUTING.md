@@ -11,7 +11,7 @@ If you find a bug, please open an issue with:
 - Steps to reproduce the issue
 - Expected behavior vs actual behavior
 - Python version and operating system
-- Sample CSV file (if applicable, anonymize sensitive data)
+- Sample CSV or VCF file (if applicable, anonymize sensitive data)
 
 ### Suggesting Features
 
@@ -43,7 +43,8 @@ Feature suggestions are welcome! Please open an issue describing:
 
 Before submitting a PR, please:
 - Test with various CSV formats
-- Test with edge cases (empty files, malformed CSVs, etc.)
+- Test with VCF (vCard) files if making changes to file processing
+- Test with edge cases (empty files, malformed CSVs/VCFs, etc.)
 - Ensure no linting errors
 - Test both GUI and command-line modes
 
